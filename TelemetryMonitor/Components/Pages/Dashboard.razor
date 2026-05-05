@@ -1,0 +1,290 @@
+﻿@page "/dashboard"
+@page "/"
+@rendermode InteractiveServer
+@using Microsoft.AspNetCore.SignalR.Client
+@using TelemetryMonitor.Models
+@inject NavigationManager Navigation
+@implements IAsyncDisposable
+
+<PageTitle>Game Telemetry Monitor</PageTitle>
+
+<style>
+    body { background-color: #0d1117 !important; }
+    .dashboard { font-family: 'Segoe UI', sans-serif; color: #e6edf3; padding: 20px; }
+    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+    .header h1 { font-size: 24px; margin: 0; }
+    .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 8px; }
+    .status-connected { background-color: #3fb950; }
+    .status-disconnected { background-color: #f85149; }
+
+    .metrics-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 20px; }
+    .metric-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+    .metric-label { font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
+    .metric-value { font-size: 32px; font-weight: bold; margin: 4px 0; }
+    .metric-sub { font-size: 11px; color: #8b949e; }
+
+    .main-content { display: grid; grid-template-columns: 1fr 380px; gap: 16px; }
+
+    .event-feed { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; max-height: 500px; overflow-y: auto; }
+    .event-feed h3 { margin: 0 0 12px 0; font-size: 14px; color: #8b949e; }
+    .event-item { display: flex; align-items: flex-start; padding: 6px 8px; border-radius: 4px; margin-bottom: 4px; font-size: 13px; animation: fadeIn 0.3s ease-in; }
+    .event-item:hover { background: #21262d; }
+    .event-icon { margin-right: 8px; font-size: 16px; min-width: 24px; }
+    .event-time { color: #484f58; font-size: 11px; margin-right: 8px; min-width: 65px; font-family: monospace; }
+    .event-player { color: #58a6ff; font-weight: 600; margin-right: 6px; }
+    .event-details { color: #8b949e; }
+    .event-amount { color: #3fb950; font-weight: 600; margin-left: 6px; }
+    .event-warning { background: #2d1b00; }
+    .event-error { background: #2d0d0d; }
+
+    .server-panel { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+    .server-panel h3 { margin: 0 0 12px 0; font-size: 14px; color: #8b949e; }
+    .server-stat { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #21262d; }
+    .server-stat:last-child { border-bottom: none; }
+    .stat-label { color: #8b949e; font-size: 13px; }
+    .stat-value { font-weight: 600; font-size: 13px; }
+
+    .progress-bar { height: 6px; background: #21262d; border-radius: 3px; margin-top: 4px; }
+    .progress-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
+    .fill-green { background: #3fb950; }
+    .fill-yellow { background: #d29922; }
+    .fill-red { background: #f85149; }
+    .fill-blue { background: #58a6ff; }
+
+    .color-green { color: #3fb950; }
+    .color-yellow { color: #d29922; }
+    .color-red { color: #f85149; }
+    .color-blue { color: #58a6ff; }
+    .color-purple { color: #bc8cff; }
+
+    @@keyframes fadeIn { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
+</style>
+
+<div class="dashboard">
+    <!-- header -->
+    <div class="header">
+        <div style="display: flex; align-items: center;">
+            <span style="font-size: 28px; margin-right: 10px;">🎮</span>
+            <h1>Game Telemetry Monitor</h1>
+            <span style="background: #1f6feb; color: white; padding: 2px 10px; border-radius: 10px; font-size: 11px; margin-left: 12px;">LIVE</span>
+        </div>
+        <div style="display: flex; align-items: center; font-size: 13px; color: #8b949e;">
+            <span class="status-dot @(isConnected ? "status-connected" : "status-disconnected")"></span>
+            @(isConnected ? "Connected - Real time streaming active" : "Disconnected - Reconnecting...")
+        </div>
+    </div>
+
+    <!-- metric cards -->
+    <div class="metrics-grid">
+        <div class="metric-card">
+            <div class="metric-label">Online Players</div>
+            <div class="metric-value color-green">@metrics.OnlinePlayers.ToString("N0")</div>
+            <div class="metric-sub">Peak today: @metrics.PeakPlayersToday.ToString("N0")</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Active Matches</div>
+            <div class="metric-value color-blue">@metrics.ActiveMatches</div>
+            <div class="metric-sub">~@(metrics.OnlinePlayers / Math.Max(metrics.ActiveMatches, 1)) players/match</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Events / Second</div>
+            <div class="metric-value color-purple">@metrics.EventsPerSecond.ToString("F1")</div>
+            <div class="metric-sub">Telemetry throughput</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Revenue Today</div>
+            <div class="metric-value color-green">$@metrics.TotalRevenueToday.ToString("N2")</div>
+            <div class="metric-sub">@metrics.TotalLoginsToday logins today</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Total Kills</div>
+            <div class="metric-value color-red">@metrics.TotalKillsToday.ToString("N0")</div>
+            <div class="metric-sub">Combat events tracked</div>
+        </div>
+    </div>
+
+    <!-- main content -->
+    <div class="main-content">
+        <!-- event feed -->
+        <div class="event-feed" id="eventFeed">
+            <h3>📡 Live Event Feed (@events.Count events captured)</h3>
+            @foreach (var ev in events.Take(100))
+            {
+                <div class="event-item @ev.CssClass">
+                    <span class="event-icon">@ev.Icon</span>
+                    <span class="event-time">@ev.TimestampUtc.ToString("HH:mm:ss")</span>
+                    <span class="event-player">@ev.PlayerName</span>
+                    <span class="event-details">@ev.Details</span>
+                    @if (ev.Amount.HasValue)
+                    {
+                        <span class="event-amount">+$@ev.Amount.Value.ToString("F2")</span>
+                    }
+                </div>
+            }
+            @if (events.Count == 0)
+            {
+                <div style="color: #484f58; font-style: italic; padding: 20px; text-align: center;">
+                    Waiting for events...
+                </div>
+            }
+        </div>
+
+        <!-- server status panel -->
+        <div class="server-panel">
+            <h3>🖥️ Server Status</h3>
+
+            <div class="server-stat">
+                <span class="stat-label">CPU Usage</span>
+                <span class="stat-value @GetCpuColor()">@metrics.ServerCpuPercent.ToString("F1")%</span>
+            </div>
+            <div class="progress-bar">
+                <div class="progress-fill @GetCpuBarColor()" style="width: @metrics.ServerCpuPercent%"></div>
+            </div>
+
+            <div class="server-stat" style="margin-top: 12px;">
+                <span class="stat-label">Memory Usage</span>
+                <span class="stat-value @GetMemColor()">@metrics.ServerMemoryPercent.ToString("F1")%</span>
+            </div>
+            <div class="progress-bar">
+                <div class="progress-fill @GetMemBarColor()" style="width: @metrics.ServerMemoryPercent%"></div>
+            </div>
+
+            <div style="margin-top: 20px;">
+                <h3>📊 Session Summary</h3>
+                <div class="server-stat">
+                    <span class="stat-label">Peak Players</span>
+                    <span class="stat-value color-green">@metrics.PeakPlayersToday.ToString("N0")</span>
+                </div>
+                <div class="server-stat">
+                    <span class="stat-label">Total Logins</span>
+                    <span class="stat-value color-blue">@metrics.TotalLoginsToday.ToString("N0")</span>
+                </div>
+                <div class="server-stat">
+                    <span class="stat-label">Total Kills</span>
+                    <span class="stat-value color-red">@metrics.TotalKillsToday.ToString("N0")</span>
+                </div>
+                <div class="server-stat">
+                    <span class="stat-label">Revenue</span>
+                    <span class="stat-value color-green">$@metrics.TotalRevenueToday.ToString("N2")</span>
+                </div>
+                <div class="server-stat">
+                    <span class="stat-label">Events Captured</span>
+                    <span class="stat-value color-purple">@events.Count.ToString("N0")</span>
+                </div>
+            </div>
+
+            <div style="margin-top: 20px;">
+                <h3>🗺️ Active Maps</h3>
+                @foreach (var map in GetActiveMapCounts().Take(6))
+                {
+                    <div class="server-stat">
+                        <span class="stat-label">@map.Key</span>
+                        <span class="stat-value">@map.Value events</span>
+                    </div>
+                }
+            </div>
+
+            <div style="margin-top: 16px; text-align: center; color: #484f58; font-size: 11px;">
+                Last updated: @metrics.LastUpdatedUtc.ToString("HH:mm:ss") UTC
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    private HubConnection? hubConnection;
+    private List<GameEvent> events = new();
+    private ServerMetrics metrics = new();
+    private bool isConnected = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        hubConnection = new HubConnectionBuilder()
+            .WithUrl(Navigation.ToAbsoluteUri("/telemetryhub"))
+            .WithAutomaticReconnect()
+            .Build();
+
+        hubConnection.On<GameEvent>("ReceiveEvent", (gameEvent) =>
+        {
+            events.Insert(0, gameEvent);
+            // Keep only last 500 events in memory
+            if (events.Count > 500)
+                events.RemoveRange(500, events.Count - 500);
+            InvokeAsync(StateHasChanged);
+        });
+
+        hubConnection.On<ServerMetrics>("ReceiveMetrics", (serverMetrics) =>
+        {
+            metrics = serverMetrics;
+            InvokeAsync(StateHasChanged);
+        });
+
+        hubConnection.Closed += (error) =>
+        {
+            isConnected = false;
+            InvokeAsync(StateHasChanged);
+            return Task.CompletedTask;
+        };
+
+        hubConnection.Reconnected += (connectionId) =>
+        {
+            isConnected = true;
+            InvokeAsync(StateHasChanged);
+            return Task.CompletedTask;
+        };
+
+        try
+        {
+            await hubConnection.StartAsync();
+            isConnected = true;
+        }
+        catch (Exception)
+        {
+            isConnected = false;
+        }
+    }
+
+    private Dictionary<string, int> GetActiveMapCounts()
+    {
+        return events
+            .Where(e => !string.IsNullOrEmpty(e.MapName))
+            .GroupBy(e => e.MapName!)
+            .ToDictionary(g => g.Key, g => g.Count())
+            .OrderByDescending(kv => kv.Value)
+            .ToDictionary(kv => kv.Key, kv => kv.Value);
+    }
+
+    private string GetCpuColor() => metrics.ServerCpuPercent switch
+    {
+        > 80 => "color-red",
+        > 60 => "color-yellow",
+        _ => "color-green"
+    };
+
+    private string GetCpuBarColor() => metrics.ServerCpuPercent switch
+    {
+        > 80 => "fill-red",
+        > 60 => "fill-yellow",
+        _ => "fill-green"
+    };
+
+    private string GetMemColor() => metrics.ServerMemoryPercent switch
+    {
+        > 80 => "color-red",
+        > 60 => "fill-yellow",
+        _ => "color-blue"
+    };
+
+    private string GetMemBarColor() => metrics.ServerMemoryPercent switch
+    {
+        > 80 => "fill-red",
+        > 60 => "fill-yellow",
+        _ => "fill-blue"
+    };
+
+    public async ValueTask DisposeAsync()
+    {
+        if (hubConnection is not null)
+            await hubConnection.DisposeAsync();
+    }
+}
